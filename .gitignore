@@ -205,3 +205,26 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# ML Project
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.mlmodel
+*.h5
+*.hdf5
+*.pb
+*.safetensors
+*.bin
+*.ckpt
+
+# Datasets
+data/
+datasets/
+
+# YOLO specific
+runs/
