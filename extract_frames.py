@@ -428,8 +428,10 @@ def main():
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect video files
+    # Collect video files, filtered by stream name if provided
     videos = sorted(p for p in input_dir.iterdir() if p.suffix.lower() in VIDEO_EXTENSIONS)
+    if args.stream_name:
+        videos = [p for p in videos if args.stream_name.lower() in p.stem.lower()]
     if not videos:
         print(f"No video files found in '{input_dir}'. Supported formats: {VIDEO_EXTENSIONS}")
         sys.exit(0)
