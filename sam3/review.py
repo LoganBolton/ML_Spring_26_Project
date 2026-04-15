@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -14,7 +15,6 @@ import time
 from pathlib import Path
 
 import requests
-from label_studio_sdk import LabelStudio
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
@@ -112,53 +112,56 @@ def ensure_label_studio_running(port: int) -> None:
     print(f"Label Studio started at {base_url}")
 
 
-def get_api_key(base_url: str) -> str:
-    """Return an API key, using the env var or creating a default user."""
-    key = os.environ.get("LABEL_STUDIO_API_KEY")
-    if key:
-        return key
+def get_session(base_url: str) -> requests.Session:
+    """Return an authenticated requests.Session using cookie-based auth.
 
-    # Try to sign up a default user (works on first run of a fresh instance)
-    signup_url = f"{base_url}/user/signup"
-    payload = {
-        "email": "admin@localhost",
-        "password": "admin1234",
-    }
-    try:
-        r = requests.post(signup_url, json=payload, timeout=10)
-        if r.status_code == 201:
-            token = r.json().get("token")
-            if token:
-                print("Created default admin user (admin@localhost / admin1234)")
-                return token
-    except Exception:
-        pass
+    Label Studio 1.23+ disabled legacy token auth, so we use session cookies.
+    """
+    email = os.environ.get("LABEL_STUDIO_EMAIL", "admin@localhost")
+    password = os.environ.get("LABEL_STUDIO_PASSWORD", "admin1234")
+    session = requests.Session()
 
-    # Try to log in with the default credentials
-    login_url = f"{base_url}/api/auth/login"
-    try:
+    # Try signup first (works on a fresh instance with no users)
+    session.get(f"{base_url}/user/signup", timeout=10)
+    csrf = session.cookies.get("csrftoken", "")
+    r = session.post(
+        f"{base_url}/user/signup",
+        data={"email": email, "password": password, "csrfmiddlewaretoken": csrf},
+        headers={"Referer": f"{base_url}/user/signup"},
+        timeout=10,
+    )
+
+    if r.url.rstrip("/").endswith("/user/signup"):
+        # User already exists — log in instead
         session = requests.Session()
-        session.get(base_url, timeout=5)
+        session.get(f"{base_url}/user/login", timeout=10)
         csrf = session.cookies.get("csrftoken", "")
-        r = session.post(
-            login_url,
-            json={"email": "admin@localhost", "password": "admin1234"},
-            headers={"X-CSRFToken": csrf},
+        session.post(
+            f"{base_url}/user/login",
+            data={"email": email, "password": password, "csrfmiddlewaretoken": csrf},
+            headers={"Referer": f"{base_url}/user/login"},
             timeout=10,
         )
-        if r.ok:
-            # Fetch token from the API
-            token_r = session.get(f"{base_url}/api/current-user/token", timeout=5)
-            if token_r.ok:
-                return token_r.json().get("token", "")
-    except Exception:
-        pass
 
-    raise SystemExit(
-        "Could not obtain a Label Studio API key.\n"
-        "Set LABEL_STUDIO_API_KEY in your environment, or start Label Studio\n"
-        "manually and create an account first."
-    )
+    # Verify we are authenticated
+    r = session.get(f"{base_url}/api/current-user/whoami", timeout=5)
+    if not r.ok:
+        raise SystemExit(
+            "Could not authenticate with Label Studio.\n"
+            "Set LABEL_STUDIO_EMAIL / LABEL_STUDIO_PASSWORD in your environment,\n"
+            "or log in at the Label Studio UI first."
+        )
+    print(f"Authenticated as {r.json().get('email', '?')}")
+    return session
+
+
+def _api(session: requests.Session, method: str, url: str, **kwargs) -> requests.Response:
+    """Make an API call with the session's CSRF token."""
+    csrf = session.cookies.get("csrftoken", "")
+    headers = kwargs.pop("headers", {})
+    headers.setdefault("X-CSRFToken", csrf)
+    headers.setdefault("Content-Type", "application/json")
+    return session.request(method, url, headers=headers, **kwargs)
 
 
 def main() -> None:
@@ -183,33 +186,36 @@ def main() -> None:
     # 1. Ensure Label Studio is running
     ensure_label_studio_running(port)
 
-    # 2. Get API key
-    api_key = get_api_key(base_url)
-    client = LabelStudio(base_url=base_url, api_key=api_key)
+    # 2. Authenticate via session cookies
+    session = get_session(base_url)
 
     # 3. Create project (or reuse existing one with the same title)
-    existing = client.projects.list()
-    project = None
-    for p in existing:
-        if p.title == PROJECT_TITLE:
-            project = p
-            print(f"Reusing existing project: {PROJECT_TITLE} (id={project.id})")
+    r = _api(session, "GET", f"{base_url}/api/projects/")
+    r.raise_for_status()
+    projects = r.json().get("results", [])
+
+    project_id = None
+    for p in projects:
+        if p["title"] == PROJECT_TITLE:
+            project_id = p["id"]
+            print(f"Reusing existing project: {PROJECT_TITLE} (id={project_id})")
             break
 
-    if project is None:
-        project = client.projects.create(
-            title=PROJECT_TITLE,
-            label_config=LABEL_CONFIG,
-        )
-        print(f"Created project: {PROJECT_TITLE} (id={project.id})")
+    if project_id is None:
+        r = _api(session, "POST", f"{base_url}/api/projects/",
+                 data=json.dumps({"title": PROJECT_TITLE, "label_config": LABEL_CONFIG}))
+        r.raise_for_status()
+        project_id = r.json()["id"]
+        print(f"Created project: {PROJECT_TITLE} (id={project_id})")
 
     # 4. Set up local file storage
-    client.import_storage.local.create(
-        project=project.id,
-        title="Raw Images",
-        path=str(images_dir),
-        use_blob_urls=True,
-    )
+    _api(session, "POST", f"{base_url}/api/storages/localfiles",
+         data=json.dumps({
+             "project": project_id,
+             "title": "Raw Images",
+             "path": str(images_dir),
+             "use_blob_urls": True,
+         }))
 
     # 5. Build tasks with pre-annotations
     tasks = []
@@ -223,11 +229,13 @@ def main() -> None:
         tasks.append(task)
 
     # 6. Import tasks
-    response = client.projects.import_tasks(id=project.id, request=tasks)
+    r = _api(session, "POST", f"{base_url}/api/projects/{project_id}/import",
+             data=json.dumps(tasks))
+    r.raise_for_status()
     print(f"Imported {len(tasks)} task(s)")
 
     # 7. Print URL
-    project_url = f"{base_url}/projects/{project.id}"
+    project_url = f"{base_url}/projects/{project_id}"
     print(f"\nOpen in your browser:\n  {project_url}\n")
     print("After reviewing, export corrected labels in YOLO format from the Label Studio UI.")
 

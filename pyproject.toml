@@ -6,7 +6,19 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "huggingface-hub>=1.10.2",
-    "label-studio-sdk>=2.0.20",
+    "label-studio==1.23.0",
+    "label-studio-sdk==2.0.18",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
     "transformers>=5.5.4",
     "ultralytics>=8.4.37",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
