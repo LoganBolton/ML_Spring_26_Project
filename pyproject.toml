@@ -5,5 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "huggingface-hub>=1.10.2",
+    "label-studio-sdk>=2.0.20",
+    "transformers>=5.5.4",
     "ultralytics>=8.4.37",
 ]
