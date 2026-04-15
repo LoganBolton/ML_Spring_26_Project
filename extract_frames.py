@@ -30,8 +30,25 @@ OUTPUT LAYOUT
 
 DEPENDENCIES
 ------------
-Handled by uv (see pyproject.toml):  opencv-python, Pillow
-System tool required:                ffprobe  (part of ffmpeg — install via `brew install ffmpeg`)
+Python packages (handled automatically by uv — just run `uv sync`):
+    opencv-python, Pillow
+
+System tool required: ffprobe (bundled with ffmpeg)
+    Mac:     brew install ffmpeg
+    Windows: winget install ffmpeg
+             OR download from https://ffmpeg.org/download.html and add to PATH
+    Linux:   sudo apt install ffmpeg       # Debian/Ubuntu
+             sudo dnf install ffmpeg       # Fedora
+             sudo pacman -S ffmpeg         # Arch
+
+SETUP (any machine)
+-------------------
+1. Install ffmpeg using the command for your OS above
+2. Install uv if you don't have it:
+       Mac/Linux:  curl -LsSf https://astral.sh/uv/install.sh | sh
+       Windows:    powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+3. Run `uv sync` in this folder to install Python dependencies
+4. Run the script (see HOW TO RUN above)
 """
 
 import argparse
