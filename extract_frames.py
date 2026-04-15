@@ -110,11 +110,11 @@ def format_hms_filename(seconds: float) -> str:
 
 def format_wallclock_filename(dt: datetime) -> str:
     """
-    Format a datetime as a filesystem-safe time-of-day string.
+    Format a datetime as a filesystem-safe date+time string.
     Uses dashes instead of colons so it works on Windows too.
-    Example: 2026-03-27 14:05:09 -> '02-05-09pm'
+    Example: 2026-03-27 14:05:09 -> '2026-03-27_02-05-09pm'
     """
-    return dt.strftime("%I-%M-%S%p").lower()   # e.g. '02-05-09pm'
+    return dt.strftime("%Y-%m-%d_%I-%M-%S%p").lower()   # e.g. '2026-03-27_02-05-09pm'
 
 
 # ---------------------------------------------------------------------------
