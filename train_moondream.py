@@ -1,4 +1,4 @@
-from PIL import Image
+from PIL import Image, ImageDraw
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -26,3 +26,23 @@ print("Caption:", caption)
 # Ask a question
 answer = model.query(image, "What's in this image?")["answer"]
 print("Answer:", answer)
+
+# Detect persons and draw bounding boxes
+OBJECT = "person"
+OUTPUT_PATH = "moondream_detections.png"
+
+detections = model.detect(image, OBJECT)["objects"]
+print(f"Detected {len(detections)} {OBJECT}(s)")
+
+annotated = image.convert("RGB").copy()
+draw = ImageDraw.Draw(annotated)
+W, H = annotated.size
+
+for det in detections:
+    # moondream2 returns normalized [0, 1] coords
+    x0, y0 = det["x_min"] * W, det["y_min"] * H
+    x1, y1 = det["x_max"] * W, det["y_max"] * H
+    draw.rectangle([x0, y0, x1, y1], outline="red", width=1)
+
+annotated.save(OUTPUT_PATH)
+print(f"Saved annotated image to {OUTPUT_PATH}")
