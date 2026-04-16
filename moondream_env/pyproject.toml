@@ -1,0 +1,15 @@
+[project]
+name = "moondream-env"
+version = "0.1.0"
+description = "Isolated env for moondream fine-tuning scripts"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "moondream>=1.1.0",
+    "pillow>=10.4.0,<11.0.0",
+    "transformers>=4.44.0,<5.0.0",
+    "accelerate>=0.33.0",
+    "einops>=0.8.0",
+    "pyvips>=2.2.3",
+    "pyvips-binary>=8.16.0",
+]

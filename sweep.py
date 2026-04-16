@@ -55,12 +55,12 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 SEARCH_SPACE: dict[str, list] = {
     # Model & size
     "model":        ["yolo26n.pt", "yolo26s.pt", "yolo26m.pt"],
-    "imgsz":        [640, 800, 960, 1280],
-    "batch":        [8, 16, 32],
+    "imgsz":        [960, 1280],
+    "batch":        [8, 16],
 
     # Optimizer
     "optimizer":    ["SGD", "AdamW", "auto"],
-    "lr0":          [1e-4, 5e-4, 1e-3, 3e-3, 1e-2, 2e-2],
+    "lr0":          [1e-4, 5e-4, 1e-3, 3e-3, 1e-2],
     "lrf":          [0.005, 0.01, 0.05, 0.1],
     "momentum":     [0.85, 0.9, 0.937, 0.95],
     "weight_decay": [0.0, 1e-4, 5e-4, 1e-3],
@@ -96,7 +96,7 @@ SEARCH_SPACE: dict[str, list] = {
 }
 
 # Confidence thresholds to probe during evaluation (picks the best per trial)
-CONF_GRID = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60]
+CONF_GRID = [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60]
 
 CSV_HEADER = [
     "trial_id", "worker_id", "gpu", "timestamp", "duration_sec", "status",
