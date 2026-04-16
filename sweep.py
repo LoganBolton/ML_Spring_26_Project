@@ -20,7 +20,7 @@ CUDA_VISIBLE_DEVICES and pulls independent random samples.
 
 Usage:
     # Use both GPUs (default)
-    uv run python sweep.py --sweep-name v1 --n-trials 400 --epochs 30
+    uv run python sweep.py --sweep-name v1 --n-trials 300 --epochs 20
 
     # Single GPU
     uv run python sweep.py --sweep-name v1 --n-trials 200 --devices 0
@@ -210,22 +210,31 @@ def append_jsonl(path: Path, obj: dict) -> None:
 
 
 def prune_trials(sweep_dir: Path, top_k: int) -> None:
-    """Keep best.pt of the top-K trials by count_mse; delete other weight blobs."""
+    """Keep best.pt of the top-K 'ok' trials by count_mse; purge 'failed' trials
+    and 'ok' trials that fell out of the top-K. In-progress trials (no CSV row
+    yet) are left alone so concurrent workers' dirs aren't wiped mid-training.
+    """
     csv_path = sweep_dir / "results.csv"
     if not csv_path.exists():
         return
-    rows = []
+    ok_rows: list[tuple[float, str]] = []
+    failed_ids: set[str] = set()
     with csv_path.open() as f:
         for r in csv.DictReader(f):
-            if r.get("status") != "ok":
+            tid = r.get("trial_id")
+            if not tid:
                 continue
-            try:
-                r["_mse"] = float(r["count_mse"])
-            except Exception:
-                continue
-            rows.append(r)
-    rows.sort(key=lambda r: r["_mse"])
-    keep = {r["trial_id"] for r in rows[:top_k]}
+            status = r.get("status")
+            if status == "ok":
+                try:
+                    ok_rows.append((float(r["count_mse"]), tid))
+                except Exception:
+                    continue
+            elif status == "failed":
+                failed_ids.add(tid)
+    ok_rows.sort()
+    keep = {tid for _, tid in ok_rows[:top_k]}
+    purge = failed_ids | {tid for _, tid in ok_rows[top_k:]}
 
     trials_dir = sweep_dir / "trials"
     if not trials_dir.is_dir():
@@ -233,7 +242,8 @@ def prune_trials(sweep_dir: Path, top_k: int) -> None:
     for tdir in trials_dir.iterdir():
         if not tdir.is_dir():
             continue
-        if tdir.name in keep:
+        name = tdir.name
+        if name in keep:
             # Keep only best.pt + small metadata, drop big artifacts
             for sub in tdir.rglob("*"):
                 if sub.is_file() and sub.name not in {
@@ -243,8 +253,9 @@ def prune_trials(sweep_dir: Path, top_k: int) -> None:
                         sub.unlink()
                     except OSError:
                         pass
-        else:
+        elif name in purge:
             shutil.rmtree(tdir, ignore_errors=True)
+        # else: not yet logged (in-progress) — leave alone.
 
 
 @contextmanager
@@ -254,7 +265,7 @@ def timed():
 
 
 # ---------------------------------------------------------------------------
-# Pre-download helper (spawned as a one-shot subprocess)
+# Pre-download / pre-warm helpers (spawned as one-shot subprocesses)
 # ---------------------------------------------------------------------------
 def _download_model(name: str) -> None:
     # Hide GPUs — this is a pure download, no CUDA needed.
@@ -262,6 +273,19 @@ def _download_model(name: str) -> None:
     os.environ.setdefault("MPLBACKEND", "Agg")
     from ultralytics import YOLO as _YOLO
     _YOLO(name)
+
+
+def _warmup_dataset(model_name: str, data_yaml: str) -> None:
+    """Force ultralytics to build labels.cache for train+val splits so concurrent
+    workers don't race on the file on their first trial."""
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ.setdefault("MPLBACKEND", "Agg")
+    from ultralytics import YOLO as _YOLO
+    m = _YOLO(model_name)
+    try:
+        m.val(data=data_yaml, device="cpu", workers=0, verbose=False, plots=False)
+    except Exception as e:
+        print(f"[warmup] val() failed (non-fatal): {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -347,59 +371,80 @@ def worker_main(
             **cfg,
         }
 
+        t_start = time.time()
         try:
-            with timed() as elapsed:
-                model = YOLO(cfg["model"])
-                train_kwargs = {k: v for k, v in cfg.items() if k != "model"}
-                model.train(
+            model = YOLO(cfg["model"])
+            train_kwargs = {k: v for k, v in cfg.items() if k != "model"}
+            # IMPORTANT: pass absolute path for `project` — ultralytics silently
+            # prepends its default runs_dir ("runs/detect/") to any relative path,
+            # which breaks our layout under sweeps/<name>/trials/<id>/run/.
+            project_abs = str(trial_dir.resolve())
+            model.train(
+                data=str(data_yaml),
+                epochs=args_dict["epochs"],
+                patience=args_dict["patience"],
+                # CUDA_VISIBLE_DEVICES has already restricted visibility, so
+                # the only visible device for ultralytics is index 0.
+                device=0,
+                workers=args_dict["workers"],
+                cache=cache_val,
+                project=project_abs,
+                name="run",
+                exist_ok=True,
+                verbose=False,
+                plots=False,
+                **train_kwargs,
+            )
+
+            run_dir = trial_dir / "run"
+            weights_dir = run_dir / "weights"
+            best_pt = weights_dir / "best.pt"
+            last_pt = weights_dir / "last.pt"
+
+            chosen_pt = None
+            if best_pt.exists():
+                chosen_pt = best_pt
+            elif last_pt.exists():
+                print(f"    [w{worker_id} warn] best.pt missing, falling back to last.pt",
+                      flush=True)
+                chosen_pt = last_pt
+            else:
+                present = []
+                if run_dir.exists():
+                    present = sorted(str(p.relative_to(run_dir))
+                                     for p in run_dir.rglob("*") if p.is_file())
+                raise FileNotFoundError(
+                    f"no weights produced in {run_dir}. "
+                    f"files present: {present[:30]}"
+                )
+
+            best_model = YOLO(str(chosen_pt))
+
+            map50 = None
+            try:
+                metrics = best_model.val(
                     data=str(data_yaml),
-                    epochs=args_dict["epochs"],
-                    patience=args_dict["patience"],
-                    # CUDA_VISIBLE_DEVICES has already restricted visibility, so
-                    # the only visible device for ultralytics is index 0.
+                    imgsz=cfg["imgsz"],
                     device=0,
                     workers=args_dict["workers"],
-                    cache=cache_val,
-                    project=str(trial_dir),
-                    name="run",
-                    exist_ok=True,
                     verbose=False,
                     plots=False,
-                    **train_kwargs,
                 )
+                map50 = float(getattr(metrics.box, "map50", float("nan")))
+            except Exception as e:
+                print(f"    [w{worker_id} warn] val() failed: {e}", flush=True)
 
-                run_dir = trial_dir / "run"
-                best_pt = run_dir / "weights" / "best.pt"
-                if not best_pt.exists():
-                    raise FileNotFoundError(f"best.pt not produced in {run_dir}")
+            eval_out = evaluate_counting(
+                best_model, val_imgs, true_counts,
+                imgsz=cfg["imgsz"], device=0,
+            )
 
-                best_model = YOLO(str(best_pt))
+            shutil.copy2(chosen_pt, trial_dir / "best.pt")
 
-                map50 = None
-                try:
-                    metrics = best_model.val(
-                        data=str(data_yaml),
-                        imgsz=cfg["imgsz"],
-                        device=0,
-                        workers=args_dict["workers"],
-                        verbose=False,
-                        plots=False,
-                    )
-                    map50 = float(getattr(metrics.box, "map50", float("nan")))
-                except Exception as e:
-                    print(f"    [w{worker_id} warn] val() failed: {e}", flush=True)
-
-                eval_out = evaluate_counting(
-                    best_model, val_imgs, true_counts,
-                    imgsz=cfg["imgsz"], device=0,
-                )
-
-                shutil.copy2(best_pt, trial_dir / "best.pt")
-
-                row.update(eval_out)
-                row["mAP50"] = map50
-                row["status"] = "ok"
-                row["duration_sec"] = round(elapsed(), 2)
+            row.update(eval_out)
+            row["mAP50"] = map50
+            row["status"] = "ok"
+            row["duration_sec"] = round(time.time() - t_start, 2)
 
             print(f"    [w{worker_id}] count_mse={row['count_mse']:.3f}  "
                   f"count_mae={row['count_mae']:.3f}  "
@@ -410,7 +455,9 @@ def worker_main(
         except Exception as e:
             row["status"] = "failed"
             row["error"] = f"{type(e).__name__}: {e}"
-            print(f"    [w{worker_id} error] {row['error']}", flush=True)
+            row["duration_sec"] = round(time.time() - t_start, 2)
+            print(f"    [w{worker_id} error] ({row['duration_sec']:.1f}s) {row['error']}",
+                  flush=True)
             traceback.print_exc()
 
         with csv_lock:
@@ -473,9 +520,9 @@ def main() -> None:
     # main process never imports torch/ultralytics itself (prevents CUDA state
     # leaking into spawned workers and breaking CUDA_VISIBLE_DEVICES pinning).
     missing = [m for m in SEARCH_SPACE["model"] if not Path(m).exists()]
+    ctx_pre = mp.get_context("spawn")
     if missing:
         print(f"[sweep] pre-downloading missing weights: {missing}")
-        ctx_pre = mp.get_context("spawn")
         for m in missing:
             pre = ctx_pre.Process(target=_download_model, args=(m,))
             pre.start()
@@ -484,6 +531,16 @@ def main() -> None:
                 print(f"[sweep]   WARN pre-download of {m} failed (exit={pre.exitcode})")
             elif Path(m).exists():
                 print(f"[sweep]   got {m}")
+
+    # Pre-warm dataset labels.cache so concurrent workers don't race on it.
+    warmup_model = next((m for m in SEARCH_SPACE["model"] if Path(m).exists()),
+                        SEARCH_SPACE["model"][0])
+    print(f"[sweep] warming dataset labels.cache with {warmup_model} ...")
+    warm = ctx_pre.Process(target=_warmup_dataset,
+                           args=(warmup_model, str(data_yaml)))
+    warm.start()
+    warm.join()
+    print(f"[sweep]   warmup exit={warm.exitcode}")
 
     # Parse devices
     devices_raw = args.devices.strip()
