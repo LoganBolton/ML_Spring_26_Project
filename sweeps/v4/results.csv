@@ -1,0 +1,55 @@
+trial_id,worker_id,gpu,timestamp,duration_sec,status,count_mse,count_mae,best_conf,count_mse_true_mean,count_mse_pred_mean,n_val_images,mAP50,model,imgsz,batch,optimizer,lr0,lrf,momentum,weight_decay,warmup_epochs,cos_lr,box,cls,dfl,hsv_h,hsv_s,hsv_v,degrees,translate,scale,fliplr,flipud,mosaic,mixup,copy_paste,erasing,close_mosaic,dropout,error
+1776365961207_w0_0000,0,0,2026-04-16 13:59:21,157.62,ok,4.615384615384615,1.6043956043956045,0.25,15.901098901098901,16.12087912087912,91,0.8872222240045475,yolo26s.pt,960,16,AdamW,0.001,0.05,0.9,0.001,1.0,True,7.5,1.0,2.5,0.015,0.7,0.2,15.0,0.0,0.8,0.5,0.1,0.5,0.25,0.5,0.4,10,0.1,
+1776365962746_w1_0000,1,1,2026-04-16 13:59:22,263.89,ok,3.681318681318681,1.4175824175824177,0.35,15.901098901098901,15.934065934065934,91,0.9048033072465338,yolo26s.pt,1280,16,auto,0.0001,0.01,0.95,0.0005,5.0,False,7.5,0.25,0.5,0.05,0.5,0.6,5.0,0.0,0.5,0.0,0.1,0.5,0.0,0.2,0.0,5,0.1,
+1776366118832_w0_0001,0,0,2026-04-16 14:01:58,142.37,ok,23.615384615384617,3.879120879120879,0.2,15.901098901098901,16.021978021978022,91,0.5109249601953223,yolo26n.pt,960,16,SGD,0.0005,0.005,0.95,0.0001,5.0,False,2.0,0.5,0.5,0.0,0.7,0.2,0.0,0.0,0.8,0.0,0.0,1.0,0.0,0.2,0.2,10,0.1,
+1776366226642_w1_0001,1,1,2026-04-16 14:03:46,58.93,failed,,,,,,,,yolo26s.pt,1280,8,auto,0.01,0.1,0.85,0.0001,3.0,False,5.0,0.5,2.5,0.015,0.3,0.2,15.0,0.1,0.25,0.5,0.0,0.5,0.25,0.0,0.0,10,0.1,"AcceleratorError: Caught AcceleratorError in pin memory thread for device 0.
+Original Traceback (most recent call last):
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 34, in do_one_step
+    data = pin_memory(data, device)
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 73, in pin_memory
+    {k: pin_memory(sample, device) for k, sample in data.items()}
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 73, in <dictcomp>
+    {k: pin_memory(sample, device) for k, sample in data.items()}
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 57, in pin_memory
+    return data.pin_memory()
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+"
+1776366261199_w0_0002,0,0,2026-04-16 14:04:21,55.96,failed,,,,,,,,yolo26s.pt,1280,16,SGD,0.0001,0.1,0.95,0.0,3.0,False,10.0,1.0,0.5,0.0,0.5,0.2,0.0,0.2,0.5,0.5,0.0,1.0,0.1,0.2,0.2,0,0.2,"AcceleratorError: Caught AcceleratorError in pin memory thread for device 0.
+Original Traceback (most recent call last):
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 34, in do_one_step
+    data = pin_memory(data, device)
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 73, in pin_memory
+    {k: pin_memory(sample, device) for k, sample in data.items()}
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 73, in <dictcomp>
+    {k: pin_memory(sample, device) for k, sample in data.items()}
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 57, in pin_memory
+    return data.pin_memory()
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+"
+1776366285585_w1_0002,1,1,2026-04-16 14:04:45,41.35,failed,,,,,,,,yolo26s.pt,960,8,AdamW,0.001,0.1,0.95,0.001,3.0,True,2.0,2.0,2.5,0.0,0.5,0.6,15.0,0.0,0.8,0.5,0.0,0.0,0.25,0.5,0.0,0,0.0,"AcceleratorError: Caught AcceleratorError in pin memory thread for device 0.
+Original Traceback (most recent call last):
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 34, in do_one_step
+    data = pin_memory(data, device)
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 73, in pin_memory
+    {k: pin_memory(sample, device) for k, sample in data.items()}
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 73, in <dictcomp>
+    {k: pin_memory(sample, device) for k, sample in data.items()}
+  File ""/home/log/Github/ML_Spring_26_Project/.venv/lib/python3.10/site-packages/torch/utils/data/_utils/pin_memory.py"", line 57, in pin_memory
+    return data.pin_memory()
+torch.AcceleratorError: CUDA error: invalid argument
+Search for `cudaErrorInvalidValue' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+"

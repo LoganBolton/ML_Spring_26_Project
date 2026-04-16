@@ -20,7 +20,7 @@ CUDA_VISIBLE_DEVICES and pulls independent random samples.
 
 Usage:
     # Use both GPUs (default)
-    uv run python sweep.py --sweep-name v2 --n-trials 500 --epochs 20
+    uv run python sweep.py --sweep-name v5 --n-trials 500 --epochs 20
 
     # Single GPU
     uv run python sweep.py --sweep-name v1 --n-trials 200 --devices 0
@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import multiprocessing as mp
 import os
@@ -459,6 +460,21 @@ def worker_main(
             print(f"    [w{worker_id} error] ({row['duration_sec']:.1f}s) {row['error']}",
                   flush=True)
             traceback.print_exc()
+        finally:
+            # Release the trial's GPU + host-pinned memory before the next trial.
+            # Without this, ultralytics' RAM cache, pinned dataloader buffers,
+            # and cached CUDA allocations accumulate across trials inside the
+            # same worker process and eventually trigger
+            # "cudaErrorInvalidValue" in the pin_memory thread.
+            model = None
+            best_model = None
+            try:
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+            except Exception as _e:
+                print(f"    [w{worker_id} warn] cleanup failed: {_e}", flush=True)
 
         with csv_lock:
             append_row(csv_path, row)
@@ -480,7 +496,7 @@ def worker_main(
 def main() -> None:
     p = argparse.ArgumentParser(description="YOLO hyperparameter sweep for counting")
     p.add_argument("--data", type=str,
-                   default="data/manual_label_4_15_26/dataset.yaml")
+                   default="data/manual_label_4_16_26/dataset.yaml")
     p.add_argument("--sweep-name", type=str, default="v1")
     p.add_argument("--sweep-root", type=Path, default=Path("sweeps"))
     p.add_argument("--n-trials", type=int, default=200,
