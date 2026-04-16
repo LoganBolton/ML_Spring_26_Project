@@ -20,7 +20,7 @@ CUDA_VISIBLE_DEVICES and pulls independent random samples.
 
 Usage:
     # Use both GPUs (default)
-    uv run python sweep.py --sweep-name v1 --n-trials 300 --epochs 20
+    uv run python sweep.py --sweep-name v2 --n-trials 500 --epochs 20
 
     # Single GPU
     uv run python sweep.py --sweep-name v1 --n-trials 200 --devices 0
