@@ -35,10 +35,14 @@ import multiprocessing as mp
 import os
 import random
 import shutil
+import sys
 import time
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
+
+# Headless matplotlib to avoid GUI backend hangs in spawned workers.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 import numpy as np
 import yaml
@@ -250,6 +254,17 @@ def timed():
 
 
 # ---------------------------------------------------------------------------
+# Pre-download helper (spawned as a one-shot subprocess)
+# ---------------------------------------------------------------------------
+def _download_model(name: str) -> None:
+    # Hide GPUs — this is a pure download, no CUDA needed.
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ.setdefault("MPLBACKEND", "Agg")
+    from ultralytics import YOLO as _YOLO
+    _YOLO(name)
+
+
+# ---------------------------------------------------------------------------
 # Worker (runs in its own process, one per GPU)
 # ---------------------------------------------------------------------------
 def worker_main(
@@ -262,11 +277,40 @@ def worker_main(
     seed: int,
     csv_lock,
 ) -> None:
+    # Unbuffered stdout/stderr so we can see where each worker is in real time.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+    print(f"[worker {worker_id}] booting pid={os.getpid()} requested_gpu={gpu}", flush=True)
+
     # Pin this process to a single physical GPU BEFORE importing torch/ultralytics.
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    os.environ.setdefault("MPLBACKEND", "Agg")
 
-    # Lazy imports so CUDA init happens after pinning
+    # Stagger imports slightly so two workers don't race on ultralytics' settings.json
+    # and HUB-file initialisation when both processes start at the exact same moment.
+    time.sleep(worker_id * 1.5)
+
+    print(f"[worker {worker_id}] importing ultralytics...", flush=True)
+    import torch
     from ultralytics import YOLO
+
+    # Verify pinning worked. With CUDA_VISIBLE_DEVICES=<gpu>, device_count()
+    # must be 1 and current_device() must be 0.
+    dev_count = torch.cuda.device_count()
+    if dev_count != 1:
+        print(f"[worker {worker_id}] WARNING: expected 1 visible CUDA device but "
+              f"torch sees {dev_count}. CUDA_VISIBLE_DEVICES may not have taken "
+              f"effect (env={os.environ.get('CUDA_VISIBLE_DEVICES')})", flush=True)
+    try:
+        torch.cuda.set_device(0)
+    except Exception as e:
+        print(f"[worker {worker_id}] torch.cuda.set_device(0) failed: {e}", flush=True)
+    print(f"[worker {worker_id}] ultralytics ready | torch sees {dev_count} GPU(s) | "
+          f"current={torch.cuda.current_device()}", flush=True)
 
     sweep_dir = Path(args_dict["sweep_dir"])
     data_yaml = Path(args_dict["data"]).resolve()
@@ -424,6 +468,22 @@ def main() -> None:
           f"total_trials={args.n_trials}  epochs={args.epochs}")
     print(f"[sweep] val: {len(val_imgs)} images, true count mean={np.mean(true_counts):.2f}, "
           f"sum={int(np.sum(true_counts))}")
+
+    # Pre-download any missing model weights in a one-shot subprocess so the
+    # main process never imports torch/ultralytics itself (prevents CUDA state
+    # leaking into spawned workers and breaking CUDA_VISIBLE_DEVICES pinning).
+    missing = [m for m in SEARCH_SPACE["model"] if not Path(m).exists()]
+    if missing:
+        print(f"[sweep] pre-downloading missing weights: {missing}")
+        ctx_pre = mp.get_context("spawn")
+        for m in missing:
+            pre = ctx_pre.Process(target=_download_model, args=(m,))
+            pre.start()
+            pre.join()
+            if pre.exitcode != 0:
+                print(f"[sweep]   WARN pre-download of {m} failed (exit={pre.exitcode})")
+            elif Path(m).exists():
+                print(f"[sweep]   got {m}")
 
     # Parse devices
     devices_raw = args.devices.strip()
