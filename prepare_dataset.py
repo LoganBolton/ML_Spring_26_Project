@@ -16,14 +16,19 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Split data into YOLO train/val structure")
-    parser.add_argument("--images-dir", type=Path, default=Path("data/raw_images"))
-    parser.add_argument("--labels-dir", type=Path, default=Path("data/labels/raw"))
+    parser.add_argument("--dataset-dir", type=Path, default=Path("data/manual_label_4_15_26"),
+                        help="Dataset root containing images/ and labels/ subdirs")
+    parser.add_argument("--images-dir", type=Path, default=None,
+                        help="Override image source dir (default: <dataset-dir>/images)")
+    parser.add_argument("--labels-dir", type=Path, default=None,
+                        help="Override label source dir (default: <dataset-dir>/labels)")
     parser.add_argument("--split", type=float, default=0.8, help="Train fraction (default 0.8)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    images_dir: Path = args.images_dir
-    labels_dir: Path = args.labels_dir
+    dataset_dir: Path = args.dataset_dir
+    images_dir: Path = args.images_dir or (dataset_dir / "images")
+    labels_dir: Path = args.labels_dir or (dataset_dir / "labels")
 
     if not images_dir.exists():
         raise SystemExit(f"Images directory not found: {images_dir}")
@@ -53,13 +58,12 @@ def main() -> None:
 
     print(f"Train: {len(train_pairs)}, Val: {len(val_pairs)}")
 
-    # Create output directories
-    data_root = Path("data")
+    # Create output directories (inside dataset_dir)
     dirs = {
-        "train_img": data_root / "images" / "train",
-        "train_lbl": data_root / "labels" / "train",
-        "val_img": data_root / "images" / "val",
-        "val_lbl": data_root / "labels" / "val",
+        "train_img": dataset_dir / "images" / "train",
+        "train_lbl": dataset_dir / "labels" / "train",
+        "val_img": dataset_dir / "images" / "val",
+        "val_lbl": dataset_dir / "labels" / "val",
     }
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
@@ -74,9 +78,9 @@ def main() -> None:
         shutil.copy2(label_path, dirs["val_lbl"] / label_path.name)
 
     # Generate dataset.yaml
-    yaml_path = data_root / "dataset.yaml"
+    yaml_path = dataset_dir / "dataset.yaml"
     yaml_path.write_text(
-        f"path: {data_root.resolve()}\n"
+        f"path: {dataset_dir.resolve()}\n"
         f"train: images/train\n"
         f"val: images/val\n"
         f"\n"
