@@ -20,10 +20,10 @@ CUDA_VISIBLE_DEVICES and pulls independent random samples.
 
 Usage:
     # Use both GPUs (default)
-    uv run python sweep.py --sweep-name v5 --n-trials 500 --epochs 20
+    uv run python sweep.py --sweep-name v7 --n-trials 100 --epochs 25
 
     # Single GPU
-    uv run python sweep.py --sweep-name v1 --n-trials 200 --devices 0
+    uv run python sweep.py --sweep-name v10 --n-trials 200 --devices 0 --epochs 25
 """
 
 from __future__ import annotations
@@ -54,46 +54,46 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 # Search space. Keys are ultralytics train() kwargs unless noted.
 # ---------------------------------------------------------------------------
 SEARCH_SPACE: dict[str, list] = {
-    # Model & size
-    "model":        ["yolo26n.pt", "yolo26s.pt", "yolo26m.pt"],
-    "imgsz":        [960, 1280],
-    "batch":        [8, 16],
+    # Model — yolo26n dropped (all catastrophic failures in v5 were nano)
+    "model":        ["yolo26s.pt", "yolo26m.pt"],
+    "imgsz":        [1280],             # pinned — 0.07 MSE spread in v5
+    "batch":        [16],               # pinned — 0.27 MSE spread in v5
 
-    # Optimizer
-    "optimizer":    ["SGD", "AdamW", "auto"],
-    "lr0":          [1e-4, 5e-4, 1e-3, 3e-3, 1e-2],
-    "lrf":          [0.005, 0.01, 0.05, 0.1],
-    "momentum":     [0.85, 0.9, 0.937, 0.95],
-    "weight_decay": [0.0, 1e-4, 5e-4, 1e-3],
-    "warmup_epochs": [1.0, 3.0, 5.0],
-    "cos_lr":       [False, True],
+    # Optimizer — narrowed based on v5 analysis
+    "optimizer":    ["SGD", "auto"],     # AdamW dropped (worst group mean)
+    "lr0":          [1e-3, 3e-3, 1e-2], # low LRs (1e-4, 5e-4) unreliable
+    "lrf":          [0.01, 0.05, 0.1],  # 0.005 was worst
+    "momentum":     [0.937, 0.95],      # 0.85, 0.9 were worse
+    "weight_decay": [0.0, 1e-3],        # 5e-4 was consistently worst
+    "warmup_epochs": [1.0, 5.0],        # 3.0 was worst
+    "cos_lr":       [True],             # pinned — 0.06 MSE spread in v5
 
-    # Loss weights — cls matters more than box for counting
-    "box":          [2.0, 5.0, 7.5, 10.0],
-    "cls":          [0.25, 0.5, 1.0, 2.0],
-    "dfl":          [0.5, 1.5, 2.5],
+    # Loss weights
+    "box":          [5.0, 7.5, 10.0],   # 2.0 dropped
+    "cls":          [0.25, 0.5, 1.0],   # 2.0 dropped
+    "dfl":          [0.5, 1.5],         # 2.5 was worst
 
-    # Augmentation — colour
-    "hsv_h":        [0.0, 0.015, 0.05],
-    "hsv_s":        [0.3, 0.5, 0.7, 0.9],
-    "hsv_v":        [0.2, 0.4, 0.6],
+    # Augmentation — colour (conservative wins for counting)
+    "hsv_h":        [0.0, 0.015],       # 0.05 was worst
+    "hsv_s":        [0.3, 0.5],         # monotonic: lower is better
+    "hsv_v":        [0.4],              # pinned — 0.31 MSE spread in v5
 
     # Augmentation — geometric
-    "degrees":      [0.0, 5.0, 15.0],
-    "translate":    [0.0, 0.1, 0.2],
-    "scale":        [0.25, 0.5, 0.8],
-    "fliplr":       [0.0, 0.5],
-    "flipud":       [0.0, 0.1],
+    "degrees":      [0.0, 5.0],         # 15.0 was worst
+    "translate":    [0.0, 0.1],         # 0.2 was worst
+    "scale":        [0.25, 0.8],        # 0.5 was worst
+    "fliplr":       [0.0],              # pinned — 0.0 consistently better
+    "flipud":       [0.1],              # pinned — 0.36 MSE spread in v5
 
     # Augmentation — composite
-    "mosaic":       [0.0, 0.5, 1.0],
-    "mixup":        [0.0, 0.1, 0.25],
-    "copy_paste":   [0.0, 0.2, 0.5],
-    "erasing":      [0.0, 0.2, 0.4],
-    "close_mosaic": [0, 5, 10, 20],
+    "mosaic":       [0.5],              # pinned — 0.47 MSE spread in v5
+    "mixup":        [0.0, 0.25],        # 0.1 was worst
+    "copy_paste":   [0.0],              # pinned — 0.21 MSE spread in v5
+    "erasing":      [0.0, 0.2],         # 0.4 was worst
+    "close_mosaic": [5, 10],            # 0 and 20 dropped
 
     # Regularization
-    "dropout":      [0.0, 0.1, 0.2],
+    "dropout":      [0.0, 0.2, 0.3],    # 0.1 was worst
 }
 
 # Confidence thresholds to probe during evaluation (picks the best per trial)
@@ -496,7 +496,7 @@ def worker_main(
 def main() -> None:
     p = argparse.ArgumentParser(description="YOLO hyperparameter sweep for counting")
     p.add_argument("--data", type=str,
-                   default="data/manual_label_4_16_26/dataset.yaml")
+                   default="data/manual_label_4_16_26_v2/dataset.yaml")
     p.add_argument("--sweep-name", type=str, default="v1")
     p.add_argument("--sweep-root", type=Path, default=Path("sweeps"))
     p.add_argument("--n-trials", type=int, default=200,
