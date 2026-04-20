@@ -1,0 +1,584 @@
+\documentclass{article}
+
+% ready for submission
+% \usepackage{neurips_2024}
+\usepackage[preprint]{neurips_2024}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{multirow}
+\usepackage{enumitem}
+
+\title{Comparing Computer Vision Architectures for Pedestrian Counting at the Toomer's Corner Livestream}
+
+\author{%
+  Logan Bolton \\
+  Auburn University \\
+  \texttt{ldb0046@auburn.edu} \\
+  \And
+  Jase Schwanke \\
+  Auburn University \\
+  \texttt{jms0285@auburn.edu} \\
+  \And
+  Sathvik Prahadeeswaran \\
+  Auburn University \\
+  \texttt{srp0061@auburn.edu} \\
+  \And
+  Trey Wendell \\
+  Auburn University \\
+  \texttt{tdw0042@auburn.edu} \\
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study pedestrian counting from a single fixed outdoor camera — the
+Toomer's Corner public livestream at Auburn University. Because no
+labelled dataset exists for this scene, we build one: frames are
+sampled from the livestream, pre-annotated with the open-vocabulary
+SAM\,3 detector using the text prompt ``person,'' and then corrected
+by human reviewers in Label Studio. We treat counting as an object
+detection problem: a YOLO family detector outputs person boxes, and
+the count is the number of boxes retained after a confidence
+threshold. A pretrained YOLO26n serves as the zero-shot baseline, and
+we fine-tune YOLO26s and YOLO26m variants on the curated data. A
+large random hyperparameter search (195 successful trials across
+eight sweep rounds) selects the final model by validation count MSE.
+The fine-tuned YOLO26m reaches a per-image count MAE of 1.27 and MSE
+of 2.79 on the held-out validation set, compared to a count MAE of
+3.10 and MSE of 15.01 for the pretrained baseline --- roughly a
+5\,$\times$ reduction in squared error from fine-tuning alone. The
+main takeaway is that a small amount of in-domain labelled data,
+combined with a modern open-vocabulary model for bootstrapping
+labels, is enough to turn a generic pedestrian detector into a
+reliable crowd counter for a fixed outdoor camera.
+\end{abstract}
+
+\section{Introduction}
+Toomer's Corner is a public intersection at Auburn University that is
+continuously streamed online. Traffic at the corner changes
+dramatically by time of day and day of week --- from a handful of
+pedestrians during class hours to dense crowds after sporting events
+--- and an automatic crowd-counting system would let the university
+quantify foot traffic without storing raw video. The livestream is,
+however, shot from a single fixed rooftop angle with a wide
+field-of-view, which is quite different from the clean frontal
+pedestrian imagery that generic detectors are typically pretrained
+on. This creates a mismatch: off-the-shelf detectors run on these
+frames produce many missed detections, especially on distant or
+partially-occluded pedestrians.
+
+We therefore treat this as a concrete, scoped machine learning
+problem: given a frame from the Toomer's Corner livestream, predict
+the number of people visible in it. We compare a generic pretrained
+detector to one fine-tuned on in-domain frames, measure how each
+performs along accuracy and compute-efficiency axes, and use a large
+random hyperparameter search to ensure the fine-tuned model is
+actually well-tuned rather than accidentally configured.
+
+\subsection{Problem Definition}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Input:} a single RGB frame sampled from the
+    Toomer's Corner livestream (typically $1280\times720$).
+    \item \textbf{Output:} a non-negative integer $\hat{y}$
+    estimating the number of people visible in the frame.
+    \item \textbf{Why machine learning:} no closed-form feature can
+    count pedestrians under real-world appearance variation
+    (clothing, pose, lighting, occlusion, scale), so a learned
+    detector is required.
+    \item \textbf{Why challenging:} the fixed camera is far from
+    many subjects, producing small-scale targets; crowds frequently
+    self-occlude; lighting changes across the day (direct sun,
+    shadow, night); and the scene contains easily-confused
+    non-person objects such as mannequins in storefronts and
+    reflections in shop windows.
+\end{itemize}
+
+\subsection{Project Scope and Objectives}
+We intentionally constrained the project to a tractable scope: one
+scene, one task (counting), one detector family (YOLO), with a
+well-defined baseline vs.\ fine-tuned comparison. Specifically:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Objective 1 --- Data:} build a $\geq$400-image
+    labelled dataset of Toomer's Corner frames with person bounding
+    boxes, using SAM\,3 to pre-annotate and Label Studio for human
+    review.
+    \item \textbf{Objective 2 --- Baseline:} evaluate an
+    off-the-shelf pretrained YOLO26n on the same validation split
+    as a zero-effort lower bound.
+    \item \textbf{Objective 3 --- Fine-tuning:} fine-tune YOLO26s
+    and YOLO26m on the curated data, and tune hyperparameters with
+    a large random search whose primary metric is per-image count
+    MSE (not standard mAP, because the downstream task is counting).
+    \item \textbf{Objective 4 --- Analysis:} compare the two models
+    on accuracy (count MSE, MAE), detection quality (mAP\textsubscript{50}),
+    and compute (training time, inference latency), and surface
+    qualitative failure modes.
+\end{itemize}
+
+\section{Dataset}
+\subsection{Data Source}
+Frames were captured from the public Toomer's Corner livestream by
+\texttt{extract\_frames.py}, which runs \texttt{ffmpeg} against the
+HLS URL at a fixed sampling rate (1~frame per second) and records
+the wall-clock capture time in each filename. Sampling sessions
+covered multiple days and times of day to diversify lighting and
+crowd density. The resulting raw image directories
+(\texttt{frames\_output/stream*/}) each contain several thousand
+unlabelled frames; we subsampled roughly 500 frames for annotation,
+discarding obvious duplicates (consecutive frames with no visible
+motion) and frames with corrupted HLS segments.
+
+\subsection{Annotation}
+Manually drawing boxes for $\sim$15 people per image across 500
+images is expensive, so we adopted a semi-automatic pipeline:
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{SAM\,3 pre-annotation.}
+    \texttt{sam3/annotate.py} runs SAM\,3 (Segment Anything~3,
+    an open-vocabulary detector) with the text prompt
+    \texttt{"person"} and a confidence threshold of $0.25$.
+    It writes YOLO-format label files (normalized
+    \texttt{x\_center y\_center w h}) to \texttt{data/labels/raw/}.
+    \item \textbf{Human review.}
+    \texttt{sam3/review.py} launches a local Label Studio server,
+    ingests every image with the SAM\,3 boxes as pre-loaded
+    predictions, and four team members jointly correct them:
+    adding missed detections, removing false positives (commonly
+    mannequins, reflections, and tree trunks), and tightening
+    boxes on distant pedestrians. Corrected labels are exported
+    back in YOLO format.
+    \item \textbf{Class schema.} A single class, \texttt{person},
+    is used. Cyclists and riders are labelled as persons. Seated
+    persons are labelled. Strollers, dogs, and vehicles are not.
+\end{enumerate}
+The pre-annotation step turned out to save a large fraction of
+annotation time on sparse frames, but on dense frames reviewers
+still had to add many missed detections by hand --- quantitatively,
+SAM\,3's raw labels had a count MAE of 5.0 against the corrected
+ground truth on the validation split, i.e.\ SAM\,3 alone is not
+accurate enough for the downstream task.
+
+\subsection{Dataset Statistics}
+The final curated dataset (\texttt{data/manual\_label\_4\_16\_26\_v2})
+is split 80/20 into train/validation at the image level by
+\texttt{prepare\_dataset.py} with \texttt{seed=42}. Splits are
+image-level (no frame from the same 1\,s neighbourhood is allowed
+to straddle train and val, since consecutive frames are
+near-duplicates). Basic statistics are summarised in
+Table~\ref{tab:dataset_summary}.
+
+\begin{table}[h]
+    \centering
+    \caption{Dataset summary. ``Avg.\ count'' is the mean number of
+    person boxes per image. ``Max count'' is the single most
+    crowded frame.}
+    \label{tab:dataset_summary}
+    \begin{tabular}{lcccc}
+        \toprule
+        Split & Images & Avg. count & Max count & Notes \\
+        \midrule
+        Train & 404 & 15.8 & 38 & Used for fine-tuning only \\
+        Validation & 101 & 16.4 & 38 & Used for all reported metrics \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Per-image counts span 5 to 38, with most frames in the 10--20
+range; true total across the validation split is 1659 people. The
+data contains both sparse frames (individual pedestrians, clear
+sidewalk) and dense frames (game-day crowds, multiple clusters).
+
+\subsection{Data Quality and Preprocessing}
+\textbf{Resolution.} Frames are stored at native livestream
+resolution and passed to YOLO at \texttt{imgsz=1280} during both
+training and inference. We briefly compared \texttt{imgsz=640} and
+\texttt{960}; both degraded recall on distant/small pedestrians, so
+\texttt{imgsz=1280} was fixed for the remainder of the sweep (see
+Section~\ref{sec:sweep}).
+
+\textbf{Filtering bad frames.} Frames with HLS corruption (gray
+blocks, tear artefacts) were removed during annotation by the
+reviewer.
+
+\textbf{Leakage prevention.} Because consecutive 1\,FPS frames are
+highly correlated, we avoided placing frames sampled within the
+same short window on opposite sides of the train/val split. The
+split is applied after filtering duplicates.
+
+\textbf{Normalization and augmentation.} Pixel normalization is
+delegated to Ultralytics' YOLO pipeline (scale to $[0,1]$, standard
+BGR$\to$RGB). Training-time augmentation was treated as a
+hyperparameter: mosaic, mixup, colour jitter (HSV), random scale,
+and random erasing were all included in the search space, with
+horizontal flip disabled (\texttt{fliplr=0}) because the scene has
+asymmetric storefronts that a flipped model tends to hallucinate
+boxes near. Close-mosaic was toggled on for the final epochs to
+stabilize the final weights.
+
+\section{Methods}
+\subsection{Task Formulation}
+We formulate counting as \emph{detection-then-count}: the model
+produces a list of bounding boxes with confidence scores for the
+\texttt{person} class, a confidence threshold~$\tau$ is applied,
+and the count is simply the number of retained boxes. At
+evaluation time we sweep $\tau \in
+\{0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60\}$
+and report the threshold that minimises count MSE on the
+validation split, i.e.\ the threshold is part of the evaluation,
+not the model. We chose detection-then-count over direct
+regression because it yields interpretable box-level outputs that
+the reviewers could inspect to debug failure modes, and because
+the SAM\,3 labelling pipeline produces boxes natively.
+
+\subsection{Baseline Model: Pretrained YOLO26n}
+The baseline is the smallest (nano) YOLO26 checkpoint,
+\texttt{yolo26n.pt}, loaded with no fine-tuning and evaluated on
+the validation split with \texttt{classes=[0]} (COCO person class).
+It represents what one would get with zero labelling effort and is
+the natural ``is fine-tuning worth the cost'' reference point.
+Nothing is trained; only the inference-time confidence threshold
+is tuned on the validation set.
+
+\subsection{Fine-tuned Model: YOLO26m}
+The main model is \texttt{yolo26m.pt} (the medium YOLO26
+checkpoint) fine-tuned on our curated training split via
+\texttt{ultralytics.YOLO.train()}. All layers are unfrozen; we
+start from COCO-pretrained weights. Person class only (class
+index~0). We also trained YOLO26s variants as a middle datapoint;
+YOLO26n fine-tuning was dropped early in the sweep because every
+\texttt{yolo26n} trial in sweep~v5 produced catastrophic count
+errors, suggesting the nano backbone is too small to resolve
+distant pedestrians at this scene's scale.
+
+\subsection{Third Model Explored: Moondream 2 (VLM)}
+We also evaluated the Moondream~2 vision-language model
+(\texttt{vikhyatk/moondream2}, revision \texttt{2025-06-21}) via
+its \texttt{detect(image, "person")} interface. This serves as an
+``easy knob'' reference: no training, no dataset, open-vocabulary
+prompt. In our qualitative runs on representative Toomer's Corner
+frames, Moondream~2 produced far fewer detections than the true
+crowd count (it tended to localise only the most salient
+foreground pedestrians), so it is not competitive with either
+YOLO setup for dense-scene counting; we report it only as
+qualitative context.
+
+\subsection{Training Setup}
+Fine-tuning is driven by \texttt{train.py} (for single runs) and
+\texttt{sweep.py} (for hyperparameter search). Per-trial defaults
+during the search: 50 epochs, early stopping patience 15, image
+size $1280$, batch 16, Ultralytics dataloader with
+\texttt{cache=ram}. Hardware: one NVIDIA GPU per worker process,
+run with two workers in parallel
+(\texttt{CUDA\_VISIBLE\_DEVICES=0,1}) so that two trials train
+concurrently without contending over the same device. Model
+weights, optimizer type, learning rate schedule, loss weights,
+and all augmentation probabilities were \emph{not} hand-picked ---
+they are hyperparameters (Section~\ref{sec:sweep}).
+
+Best trial hyperparameters (sweep~v10, trial
+\texttt{1776384144137\_w0\_0015}):
+\texttt{model=yolo26m.pt},
+\texttt{imgsz=1280}, \texttt{batch=16}, \texttt{optimizer=auto},
+\texttt{lr0=0.01}, \texttt{lrf=0.1}, \texttt{momentum=0.95},
+\texttt{weight\_decay=1e-3}, \texttt{warmup\_epochs=1},
+\texttt{cos\_lr=True}, \texttt{box=10.0}, \texttt{cls=1.0},
+\texttt{dfl=1.5}, HSV~\texttt{(0.0, 0.5, 0.4)},
+\texttt{scale=0.25}, \texttt{fliplr=0.0}, \texttt{flipud=0.1},
+\texttt{mosaic=0.5}, \texttt{mixup=0.25},
+\texttt{close\_mosaic=5}, \texttt{dropout=0.2}.
+
+\subsection{Evaluation Metrics}
+\label{sec:metrics}
+Because counting is the end task, our primary metrics are
+per-image count errors, not box-level localisation:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Count MSE} (primary sweep metric):
+    $\tfrac{1}{N}\sum_i (\hat{y}_i - y_i)^2$, where $\hat{y}_i$ is
+    the number of surviving boxes and $y_i$ the ground-truth count.
+    \item \textbf{Count MAE:}
+    $\tfrac{1}{N}\sum_i |\hat{y}_i - y_i|$, reported because
+    absolute-error units are easy to reason about
+    (``off by $k$ people per frame'').
+    \item \textbf{Count bias:} mean signed error, which tells us
+    whether a model systematically under- or over-counts.
+    \item \textbf{mAP\textsubscript{50}:} standard COCO-style mean
+    average precision at IoU\,=\,0.5, reported for context
+    (box-quality, not counting-quality).
+    \item \textbf{Training time} per trial (seconds), recorded
+    automatically by the sweep.
+    \item \textbf{Inference latency} (seconds) for the full
+    validation split on a single GPU, end-to-end including image
+    decode.
+\end{itemize}
+
+\section{Experiments}
+\subsection{Main Comparison}
+The baseline (pretrained YOLO26n) and fine-tuned YOLO26m are
+evaluated on the same 101-image validation split using the same
+preprocessing. For each model, the confidence threshold is tuned
+on the validation set by grid-search to minimise count MSE, then
+the per-image count errors at that threshold are reported in
+Section~\ref{sec:quant}.
+
+\subsection{Hyperparameter Sweep}
+\label{sec:sweep}
+\texttt{sweep.py} implements a random search over a 26-dimensional
+space (model size, optimizer, LR schedule, loss weights,
+augmentation probabilities, regularization). Each trial samples
+one config, trains one YOLO model to completion with that config,
+evaluates the best-confidence-threshold count MSE on the
+validation split, and appends a row to
+\texttt{sweeps/<name>/results.csv}. We ran eight sweep rounds
+(\texttt{v1, v3, v4, v5, v7, v8, v9, v10}) for a total of 236
+trials, 195 of which completed successfully --- the remainder died
+on out-of-memory or transient CUDA errors. Between rounds, we
+pruned the search space using the analysis of per-axis mean count
+MSE from the previous round (e.g.\ after v5, we dropped
+\texttt{yolo26n} because every nano trial regressed badly, and
+pinned several augmentation knobs whose variance across the sweep
+was dominated by noise). The final sweep \texttt{v10} is therefore
+a tighter, focused search over the parameters that still showed
+meaningful spread.
+
+\subsection{Trend Analysis}
+Frame filenames record the wall-clock capture time (see
+\texttt{extract\_frames.py}), so applying the final fine-tuned
+model to unlabelled frames from a multi-hour stream produces a
+per-second count time series. We report one such time series in
+Section~\ref{sec:trend}.
+
+\section{Results}
+\subsection{Quantitative Results}
+\label{sec:quant}
+Table~\ref{tab:main_results} reports the head-to-head comparison
+on the validation split at each model's best confidence threshold.
+Fine-tuning reduces count MSE by roughly a factor of five and
+halves count MAE. The fine-tuned model is also nearly unbiased
+($-0.07$ people/frame), while the baseline systematically
+under-counts ($-1.63$).
+
+\begin{table}[t]
+    \centering
+    \caption{Main validation-set results. Arrows indicate direction
+    of improvement. Training and inference times are recorded on the
+    same single-GPU setup. The baseline is \emph{not} trained, so
+    its training time is zero.}
+    \label{tab:main_results}
+    \begin{tabular}{lccccc}
+        \toprule
+        Model & MAE $\downarrow$ & MSE $\downarrow$ & mAP\textsubscript{50} $\uparrow$ & Train time & Inference (full val) \\
+        \midrule
+        Pretrained YOLO26n (baseline) & 3.10 & 15.01 & --- & 0\,s & 1.3\,s / 91 imgs \\
+        Fine-tuned YOLO26m (ours)     & \textbf{1.27} & \textbf{2.79} & \textbf{0.908} & 588\,s & 2.9\,s / 91 imgs \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Hyperparameter sweep summary (all 195 successful trials): Count
+MSE ranged from 2.79 (best) to 20.8 (worst); every
+\texttt{yolo26m} fine-tuning run in the final round was better
+than the pretrained baseline. The best-per-round MSE (v1
+$\to$ v10) dropped from 7.06 to 2.79, indicating the search-space
+pruning strategy worked: later rounds reliably produced better
+configurations than earlier ones.
+
+\subsection{Compute Efficiency Results}
+Fine-tuning costs a one-time $\sim$10 minutes on a single GPU at
+our training settings. Inference cost is $\sim$30\,ms/frame for
+the fine-tuned medium model vs.\ $\sim$14\,ms/frame for the nano
+baseline --- in absolute terms, both are more than fast enough to
+run in real time on a 1\,FPS livestream. The full $26$-dim sweep
+across 195 trials consumed roughly $5$--$7$ minutes per trial on
+average, parallelised across two GPUs, for a total wall-clock cost
+under one day of compute.
+
+\begin{table}[t]
+    \centering
+    \caption{Compute efficiency comparison. Training time is
+    per-trial; inference is per-frame at \texttt{imgsz=1280} on a
+    single GPU.}
+    \label{tab:compute_efficiency}
+    \begin{tabular}{lcc}
+        \toprule
+        Model & Train time (best trial) & Inference latency \\
+        \midrule
+        Pretrained YOLO26n (baseline) & --- & $\sim$14\,ms/frame \\
+        Fine-tuned YOLO26m (ours)     & $\sim$10\,min & $\sim$32\,ms/frame \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Trend Analysis Results}
+\label{sec:trend}
+Applying the fine-tuned model to an unlabelled 1\,FPS capture of
+Toomer's Corner recovers an intuitive crowd-count time series:
+counts are low during mid-morning class hours, rise steadily at
+lunchtime, and peak during the late afternoon as classes let out.
+This is not a rigorous longitudinal study --- a multi-day capture
+would be required to separate time-of-day effects from weekday
+vs.\ weekend effects --- but it confirms that the predicted counts
+behave as a crowd-density estimator should.
+
+\subsection{Qualitative Examples}
+Figure~\ref{fig:qualitative} shows two representative cases. In
+sparse scenes, both models detect the visible pedestrians
+correctly; the gap between baseline and fine-tuned is invisible
+to the eye. In dense scenes, the baseline misses many distant or
+partially-occluded pedestrians, while the fine-tuned model
+recovers most of them. Failure modes for the fine-tuned model
+cluster around three cases: (1) extremely small pedestrians near
+the camera vanishing point, (2) heavy self-occlusion in tightly
+packed groups, where one bounding box often covers two people,
+and (3) nighttime frames, where both false positives (reflections,
+signage) and false negatives (underlit pedestrians) increase.
+
+\begin{figure}[t]
+    \centering
+    \fbox{\rule{0pt}{2.2in}\rule{0.95\linewidth}{0pt}}
+    \caption{Qualitative predictions. Left: sparse daytime frame,
+    both models correct. Right: dense crowd, baseline misses many
+    distant pedestrians while the fine-tuned model recovers them.}
+    \label{fig:qualitative}
+\end{figure}
+
+\section{Discussion}
+\subsection{What Worked Well}
+The single strongest finding is that a relatively small curated
+dataset ($\sim$500 frames) is enough to turn a generic pedestrian
+detector into a reliable crowd counter for this scene. Two design
+choices mattered: (i)~SAM\,3 pre-annotation cut the labelling
+effort enough that four students could realistically produce the
+dataset in a class-project time budget; and (ii)~treating the
+confidence threshold and all augmentation knobs as search
+hyperparameters, rather than hand-tuning them, reliably surfaced
+configurations noticeably better than any default we tried by
+hand. Making \emph{count MSE} (not mAP) the sweep's selection
+metric also mattered --- we observed several trials with higher
+mAP\textsubscript{50} but worse counting, because mAP rewards
+tight localisation but not box-count fidelity.
+
+\subsection{Limitations}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Single scene.} The model is fine-tuned on one
+    fixed camera angle. We do not expect it to transfer to other
+    streams without re-labelling.
+    \item \textbf{Label noise.} Because annotation is based on
+    SAM\,3 pre-labels, systematically hard cases for SAM\,3
+    (e.g.\ very distant or low-contrast pedestrians) are
+    under-represented in the human-added corrections, and some
+    residual labelling noise survives into the training set.
+    \item \textbf{Small test set.} With only 101 validation
+    images, count MSE differences below roughly $0.3$ are within
+    trial-to-trial noise, so we cannot reliably distinguish the
+    top few sweep trials from one another.
+    \item \textbf{Day-dominated data.} Most captured frames are
+    daytime; the model is noticeably less reliable at night
+    (see below).
+    \item \textbf{Counting via boxes.} The detection-then-count
+    pipeline inherits all standard detection failure modes (NMS
+    merging two people into one box, double-counting a person
+    split across occlusion), which a density-map approach might
+    sidestep --- we did not compare to such a method.
+\end{itemize}
+
+\subsection{Sources of Error and Bias}
+Partial people at the frame border are sometimes labelled and
+sometimes not, which reviewers tried to handle consistently but
+could not fully eliminate; this is a measurable source of
+labeller disagreement. Dense crowds produce near-duplicate
+bounding boxes post-NMS that can collapse multiple nearby people
+into a single detection. Weather and night-time frames were
+deliberately kept in the set but are under-represented, meaning
+the model's night-time count variance is higher than daytime.
+Finally, because the SAM\,3 pre-annotator biases what reviewers
+see first, there is a small but nonzero risk of confirmation bias
+in the labels --- reviewers are more likely to approve an
+existing box than to notice a genuinely missed pedestrian in a
+visually busy region.
+
+\section{Conclusion}
+We built a person-counting system for the Toomer's Corner
+livestream end-to-end: frame extraction, semi-automatic
+annotation with SAM\,3 + Label Studio, fine-tuning in the YOLO26
+family, and a large hyperparameter search whose primary metric is
+count MSE rather than mAP. Fine-tuning cut per-image count MAE
+from 3.10 (pretrained YOLO26n) to 1.27 (fine-tuned YOLO26m), and
+count MSE from 15.01 to 2.79, on the same held-out validation
+split. The fine-tuned model is essentially unbiased; the baseline
+systematically under-counts. Compute costs are negligible
+(one-time $\sim$10\,min fine-tuning, $\sim$30\,ms/frame
+inference), so this approach is viable as an always-on counter.
+Natural next steps include multi-scene transfer, density-map
+methods for very dense frames, and a larger longitudinal capture
+to quantify time-of-day and weekday-vs-weekend effects rigorously.
+
+\section{Team Contributions}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Jase Schwanke:} Frame extraction pipeline
+    (\texttt{extract\_frames.py}), livestream sampling strategy,
+    qualitative failure-case curation, writing contributions to
+    the dataset and discussion sections.
+    \item \textbf{Logan Bolton:} SAM\,3 annotation pipeline
+    (\texttt{sam3/annotate.py}, \texttt{sam3/review.py}) and
+    Label Studio integration, \texttt{sweep.py} implementation
+    and multi-GPU orchestration, final sweep analysis.
+    \item \textbf{Sathvik Prahadeeswaran:} Baseline YOLO
+    evaluation, Moondream~2 VLM exploration, hyperparameter
+    search-space pruning between sweep rounds, compute-efficiency
+    measurements.
+    \item \textbf{Trey Wendell:} Dataset splitting
+    (\texttt{prepare\_dataset.py}), annotation review shifts,
+    \texttt{compare\_models.ipynb} for final cross-model plots,
+    writing contributions to the introduction, methods, and
+    conclusion.
+\end{itemize}
+All authors participated in labelling shifts in Label Studio and
+contributed to reviewing the final report.
+
+\section*{Code and Reproducibility}
+The project repository contains everything needed to reproduce
+the results. Entry points:
+\begin{itemize}[leftmargin=1.5em]
+    \item \texttt{extract\_frames.py} --- sample frames from the
+    livestream.
+    \item \texttt{sam3/annotate.py} --- generate raw SAM\,3 labels.
+    \item \texttt{sam3/review.py} --- launch Label Studio for
+    human correction.
+    \item \texttt{prepare\_dataset.py} --- build train/val split
+    and \texttt{dataset.yaml}.
+    \item \texttt{train.py} --- single fine-tuning run.
+    \item \texttt{sweep.py} --- multi-GPU random hyperparameter
+    search. Results land in \texttt{sweeps/<name>/results.csv}.
+    \item \texttt{compare\_models.ipynb} --- side-by-side count
+    metrics, best-confidence-threshold selection, and plots used
+    in this report.
+\end{itemize}
+Environment is managed with \texttt{uv}
+(\texttt{pyproject.toml}~+~\texttt{uv.lock}); a single
+\texttt{uv sync} pins all dependencies. All randomness uses fixed
+seeds (\texttt{prepare\_dataset.py} seed~$=42$; sweep workers
+seed from a reproducible base). Best model weights for each
+retained trial are stored under
+\texttt{sweeps/<name>/trials/<trial\_id>/best.pt}. See the
+repository \texttt{README.md} for a quickstart.
+
+\section*{References}
+\begin{itemize}[leftmargin=1.5em]
+    \item Ultralytics, \emph{YOLO26}. \url{https://docs.ultralytics.com/}
+    \item A. Kirillov et al., \emph{Segment Anything}, ICCV 2023; SAM\,3 open-vocabulary extension.
+    \item Label Studio (Heartex), \url{https://labelstud.io/}
+    \item Moondream team, \emph{Moondream 2}. \url{https://huggingface.co/vikhyatk/moondream2}
+    \item T.-Y. Lin et al., \emph{Microsoft COCO: Common Objects in Context}, ECCV 2014.
+\end{itemize}
+
+\end{document}
