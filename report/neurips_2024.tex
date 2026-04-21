@@ -352,7 +352,27 @@ MSE from the previous round (e.g.\ after v5, we dropped
 pinned several augmentation knobs whose variance across the sweep
 was dominated by noise). The final sweep \texttt{v10} is therefore
 a tighter, focused search over the parameters that still showed
-meaningful spread.
+meaningful spread. Figure~\ref{fig:sweep_progression} visualises
+the progression: per-round spread narrows as the search space
+tightens, and the running best-so-far curve across all 195
+trials decreases from an early-round best of 7.06 to a final
+best of 2.79 --- well below the pretrained-baseline reference
+line at 15.01.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/sweep_progression.png}
+    \caption{Hyperparameter sweep progression. (a) Each dot is
+    one successful trial; colour encodes YOLO backbone
+    (\texttt{yolo26n/s/m}); the black diamond line tracks the
+    best count MSE achieved in each round. Early rounds
+    (\texttt{v1}--\texttt{v4}) contain many catastrophic
+    \texttt{yolo26n} trials; later rounds concentrate on
+    \texttt{yolo26m}. (b) Trials plotted in chronological order,
+    with the running best-so-far curve in red and the pretrained
+    YOLO26n baseline (MSE 15.01) as a dashed reference.}
+    \label{fig:sweep_progression}
+\end{figure}
 
 \subsection{Trend Analysis}
 Frame filenames record the wall-clock capture time (see
@@ -408,7 +428,23 @@ baseline and roughly half a second per frame for SAM\,3 --- in
 absolute terms, both YOLO variants are more than fast enough to
 run in real time on a 1\,FPS livestream, while SAM\,3 is
 order-of-magnitude slower and would become a bottleneck at
-higher frame rates. The full $26$-dim sweep
+higher frame rates. Figure~\ref{fig:compute_efficiency}
+visualises the accuracy-vs-compute trade-off: the fine-tuned
+YOLO26m sits in the preferred corner of the plane --- lower
+count MAE than either baseline \emph{and} $\sim$15\,$\times$
+faster inference than SAM\,3.
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/compute_efficiency.png}
+    \caption{Compute efficiency on the Toomer's Corner validation
+    split. (a) Per-frame inference latency on a single GPU (log
+    scale). (b) Accuracy vs.\ compute Pareto plot: count MAE
+    (y-axis) against per-frame inference latency (x-axis, log
+    scale). The fine-tuned YOLO26m is the only model in the
+    low-latency, low-error region.}
+    \label{fig:compute_efficiency}
+\end{figure} The full $26$-dim sweep
 across 195 trials consumed roughly $5$--$7$ minutes per trial on
 average, parallelised across two GPUs, for a total wall-clock cost
 under one day of compute.
@@ -442,8 +478,7 @@ vs.\ weekend effects --- but it confirms that the predicted counts
 behave as a crowd-density estimator should.
 
 \subsection{Qualitative Examples}
-Figure~\ref{fig:qualitative} shows two representative cases. In
-sparse scenes, both models detect the visible pedestrians
+In sparse scenes, both models detect the visible pedestrians
 correctly; the gap between baseline and fine-tuned is invisible
 to the eye. In dense scenes, the baseline misses many distant or
 partially-occluded pedestrians, while the fine-tuned model
@@ -453,15 +488,6 @@ the camera vanishing point, (2) heavy self-occlusion in tightly
 packed groups, where one bounding box often covers two people,
 and (3) nighttime frames, where both false positives (reflections,
 signage) and false negatives (underlit pedestrians) increase.
-
-\begin{figure}[t]
-    \centering
-    \fbox{\rule{0pt}{2.2in}\rule{0.95\linewidth}{0pt}}
-    \caption{Qualitative predictions. Left: sparse daytime frame,
-    both models correct. Right: dense crowd, baseline misses many
-    distant pedestrians while the fine-tuned model recovers them.}
-    \label{fig:qualitative}
-\end{figure}
 
 \section{Discussion}
 \subsection{What Worked Well}
