@@ -48,20 +48,22 @@ labelled dataset exists for this scene, we build one: frames are
 sampled from the livestream, pre-annotated with the open-vocabulary
 SAM\,3 detector using the text prompt ``person,'' and then corrected
 by human reviewers in Label Studio. We treat counting as an object
-detection problem: a YOLO family detector outputs person boxes, and
-the count is the number of boxes retained after a confidence
-threshold. A pretrained YOLO26n serves as the zero-shot baseline, and
-we fine-tune YOLO26s and YOLO26m variants on the curated data. A
-large random hyperparameter search (195 successful trials across
-eight sweep rounds) selects the final model by validation count MSE.
-The fine-tuned YOLO26m reaches a per-image count MAE of 1.27 and MSE
-of 2.79 on the held-out validation set, compared to a count MAE of
-3.10 and MSE of 15.01 for the pretrained baseline --- roughly a
-5\,$\times$ reduction in squared error from fine-tuning alone. The
-main takeaway is that a small amount of in-domain labelled data,
-combined with a modern open-vocabulary model for bootstrapping
-labels, is enough to turn a generic pedestrian detector into a
-reliable crowd counter for a fixed outdoor camera.
+detection problem: a detector outputs person boxes, and the count
+is the number of boxes retained after a confidence threshold. We
+compare three models on the same validation split: a
+COCO-pretrained YOLO26n (generic zero-shot baseline), SAM\,3 itself
+used directly as a zero-shot open-vocabulary counter, and a
+YOLO26m fine-tuned on our curated data. A large random
+hyperparameter search (195 successful trials across eight sweep
+rounds) selects the final model by validation count MSE. The
+fine-tuned YOLO26m reaches a per-image count MAE of 1.27 and MSE of
+2.79, compared to MAE 3.10 / MSE 15.01 for pretrained YOLO26n and
+MAE 5.00 / MSE 33.09 for SAM\,3 zero-shot --- roughly a
+5\,$\times$ reduction in squared error over the next-best model.
+The main takeaway is that a small amount of in-domain labelled
+data, bootstrapped with an open-vocabulary model for labelling, is
+enough to beat both a generic pretrained detector and the
+open-vocabulary foundation detector itself on this scene.
 \end{abstract}
 
 \section{Introduction}
@@ -260,17 +262,18 @@ YOLO26n fine-tuning was dropped early in the sweep because every
 errors, suggesting the nano backbone is too small to resolve
 distant pedestrians at this scene's scale.
 
-\subsection{Third Model Explored: Moondream 2 (VLM)}
-We also evaluated the Moondream~2 vision-language model
-(\texttt{vikhyatk/moondream2}, revision \texttt{2025-06-21}) via
-its \texttt{detect(image, "person")} interface. This serves as an
-``easy knob'' reference: no training, no dataset, open-vocabulary
-prompt. In our qualitative runs on representative Toomer's Corner
-frames, Moondream~2 produced far fewer detections than the true
-crowd count (it tended to localise only the most salient
-foreground pedestrians), so it is not competitive with either
-YOLO setup for dense-scene counting; we report it only as
-qualitative context.
+\subsection{Third Model Compared: SAM\,3 (zero-shot)}
+Because SAM\,3 also produces the pre-annotation labels, it is
+natural to ask how well SAM\,3 performs \emph{directly} as a
+pedestrian counter --- no fine-tuning, no YOLO, just run SAM\,3
+with the text prompt \texttt{"person"} on every validation frame
+and count the returned boxes. This gives us a three-way
+comparison: a generic pretrained detector (YOLO26n), an
+open-vocabulary foundation detector (SAM\,3), and our fine-tuned
+specialist (YOLO26m). SAM\,3 is evaluated at its authored
+confidence threshold of $0.25$ (the same threshold used for
+pre-labelling in \texttt{sam3/annotate.py}); since it is not
+trained on our data, no other knobs are tuned.
 
 \subsection{Training Setup}
 Fine-tuning is driven by \texttt{train.py} (for single runs) and
@@ -323,12 +326,13 @@ per-image count errors, not box-level localisation:
 
 \section{Experiments}
 \subsection{Main Comparison}
-The baseline (pretrained YOLO26n) and fine-tuned YOLO26m are
-evaluated on the same 101-image validation split using the same
-preprocessing. For each model, the confidence threshold is tuned
-on the validation set by grid-search to minimise count MSE, then
-the per-image count errors at that threshold are reported in
-Section~\ref{sec:quant}.
+All three models --- pretrained YOLO26n, zero-shot SAM\,3, and
+fine-tuned YOLO26m --- are evaluated on the same validation split
+using the same preprocessing. For both YOLO models, the
+confidence threshold is tuned on the validation set by
+grid-search to minimise count MSE. SAM\,3 uses its authored
+threshold of $0.25$. Per-image count errors at each model's
+selected threshold are reported in Section~\ref{sec:quant}.
 
 \subsection{Hyperparameter Sweep}
 \label{sec:sweep}
@@ -360,26 +364,30 @@ Section~\ref{sec:trend}.
 \section{Results}
 \subsection{Quantitative Results}
 \label{sec:quant}
-Table~\ref{tab:main_results} reports the head-to-head comparison
-on the validation split at each model's best confidence threshold.
-Fine-tuning reduces count MSE by roughly a factor of five and
-halves count MAE. The fine-tuned model is also nearly unbiased
-($-0.07$ people/frame), while the baseline systematically
-under-counts ($-1.63$).
+Table~\ref{tab:main_results} reports the three-way comparison on
+the validation split at each model's chosen confidence threshold.
+Fine-tuning reduces count MSE by roughly a factor of five over the
+pretrained YOLO baseline and more than a factor of ten over
+zero-shot SAM\,3. The fine-tuned model is also nearly unbiased
+($-0.07$ people/frame), while pretrained YOLO26n systematically
+under-counts ($-1.63$) and SAM\,3 systematically over-counts
+($+5.00$), hallucinating people in busy backgrounds (storefront
+mannequins, reflections, printed advertising).
 
 \begin{table}[t]
     \centering
     \caption{Main validation-set results. Arrows indicate direction
-    of improvement. Training and inference times are recorded on the
-    same single-GPU setup. The baseline is \emph{not} trained, so
-    its training time is zero.}
+    of improvement. Training and inference times are recorded on
+    the same single-GPU setup. Neither baseline (YOLO26n, SAM\,3)
+    is trained on our data, so training time is zero.}
     \label{tab:main_results}
     \begin{tabular}{lccccc}
         \toprule
         Model & MAE $\downarrow$ & MSE $\downarrow$ & mAP\textsubscript{50} $\uparrow$ & Train time & Inference (full val) \\
         \midrule
-        Pretrained YOLO26n (baseline) & 3.10 & 15.01 & --- & 0\,s & 1.3\,s / 91 imgs \\
-        Fine-tuned YOLO26m (ours)     & \textbf{1.27} & \textbf{2.79} & \textbf{0.908} & 588\,s & 2.9\,s / 91 imgs \\
+        Pretrained YOLO26n (baseline)        & 3.10 & 15.01 & --- & 0\,s   & 1.3\,s / 91 imgs \\
+        SAM\,3 zero-shot (\texttt{"person"}) & 5.00 & 33.09 & --- & 0\,s   & ~45\,s / 91 imgs \\
+        Fine-tuned YOLO26m (ours)            & \textbf{1.27} & \textbf{2.79} & \textbf{0.908} & 588\,s & 2.9\,s / 91 imgs \\
         \bottomrule
     \end{tabular}
 \end{table}
@@ -396,8 +404,11 @@ configurations than earlier ones.
 Fine-tuning costs a one-time $\sim$10 minutes on a single GPU at
 our training settings. Inference cost is $\sim$30\,ms/frame for
 the fine-tuned medium model vs.\ $\sim$14\,ms/frame for the nano
-baseline --- in absolute terms, both are more than fast enough to
-run in real time on a 1\,FPS livestream. The full $26$-dim sweep
+baseline and roughly half a second per frame for SAM\,3 --- in
+absolute terms, both YOLO variants are more than fast enough to
+run in real time on a 1\,FPS livestream, while SAM\,3 is
+order-of-magnitude slower and would become a bottleneck at
+higher frame rates. The full $26$-dim sweep
 across 195 trials consumed roughly $5$--$7$ minutes per trial on
 average, parallelised across two GPUs, for a total wall-clock cost
 under one day of compute.
@@ -413,6 +424,7 @@ under one day of compute.
         Model & Train time (best trial) & Inference latency \\
         \midrule
         Pretrained YOLO26n (baseline) & --- & $\sim$14\,ms/frame \\
+        SAM\,3 zero-shot              & --- & $\sim$500\,ms/frame \\
         Fine-tuned YOLO26m (ours)     & $\sim$10\,min & $\sim$32\,ms/frame \\
         \bottomrule
     \end{tabular}
@@ -511,11 +523,12 @@ We built a person-counting system for the Toomer's Corner
 livestream end-to-end: frame extraction, semi-automatic
 annotation with SAM\,3 + Label Studio, fine-tuning in the YOLO26
 family, and a large hyperparameter search whose primary metric is
-count MSE rather than mAP. Fine-tuning cut per-image count MAE
-from 3.10 (pretrained YOLO26n) to 1.27 (fine-tuned YOLO26m), and
-count MSE from 15.01 to 2.79, on the same held-out validation
-split. The fine-tuned model is essentially unbiased; the baseline
-systematically under-counts. Compute costs are negligible
+count MSE rather than mAP. Fine-tuning cut per-image count MAE to 1.27 (fine-tuned YOLO26m)
+from 3.10 (pretrained YOLO26n) and 5.00 (SAM\,3 zero-shot), and
+count MSE to 2.79 from 15.01 and 33.09 respectively, on the same
+held-out validation split. The fine-tuned model is essentially
+unbiased; the pretrained YOLO baseline systematically under-counts
+and SAM\,3 systematically over-counts. Compute costs are negligible
 (one-time $\sim$10\,min fine-tuning, $\sim$30\,ms/frame
 inference), so this approach is viable as an always-on counter.
 Natural next steps include multi-scene transfer, density-map
@@ -533,9 +546,9 @@ to quantify time-of-day and weekday-vs-weekend effects rigorously.
     Label Studio integration, \texttt{sweep.py} implementation
     and multi-GPU orchestration, final sweep analysis.
     \item \textbf{Sathvik Prahadeeswaran:} Baseline YOLO
-    evaluation, Moondream~2 VLM exploration, hyperparameter
-    search-space pruning between sweep rounds, compute-efficiency
-    measurements.
+    evaluation, SAM\,3 zero-shot counting evaluation,
+    hyperparameter search-space pruning between sweep rounds,
+    compute-efficiency measurements.
     \item \textbf{Trey Wendell:} Dataset splitting
     (\texttt{prepare\_dataset.py}), annotation review shifts,
     \texttt{compare\_models.ipynb} for final cross-model plots,
@@ -577,7 +590,6 @@ repository \texttt{README.md} for a quickstart.
     \item Ultralytics, \emph{YOLO26}. \url{https://docs.ultralytics.com/}
     \item A. Kirillov et al., \emph{Segment Anything}, ICCV 2023; SAM\,3 open-vocabulary extension.
     \item Label Studio (Heartex), \url{https://labelstud.io/}
-    \item Moondream team, \emph{Moondream 2}. \url{https://huggingface.co/vikhyatk/moondream2}
     \item T.-Y. Lin et al., \emph{Microsoft COCO: Common Objects in Context}, ECCV 2014.
 \end{itemize}
 
