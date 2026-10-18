@@ -1,0 +1,14 @@
+{
+  "finetuned": {
+    "weights": "sweeps/v10/trials/1776384144137_w0_0015/best.pt",
+    "conf": 0.25,
+    "count": 54,
+    "image": "toomers_2026-10-17_jrptigers_finetuned_pred.jpg"
+  },
+  "baseline": {
+    "weights": "yolo26n.pt",
+    "conf": 0.1,
+    "count": 20,
+    "image": "toomers_2026-10-17_jrptigers_baseline_pred.jpg"
+  }
+}
